@@ -1,0 +1,30 @@
+personal:
+  name: "Jarrett Driscoll"
+  email: "jdriscollpro@gmail.com"
+  phone: "412-616-2093"
+  location: "North Huntingdon, PA"
+  linkedin: "linkedin.com/in/jarrettdriscoll"
+  github: ""
+  website: ""
+
+resume:
+  base_path: "data/resume_base.pdf"
+  tailored_output_dir: "data/tailored"
+
+anthropic:
+  model: "claude-sonnet-4-6"
+  max_tokens: 4000
+
+apply:
+  headless: false
+  slow_mo: 50
+  screenshot_on_error: true
+  manual_fallback: true
+  timeout: 30000
+
+tracker:
+  path: "data/applications.json"
+
+logging:
+  level: "INFO"
+  output_dir: "output/logs"
