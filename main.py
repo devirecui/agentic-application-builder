@@ -4,7 +4,9 @@ import sys
 import yaml
 import click
 
-# Ensure UTF-8 output on Windows
+# Ensure UTF-8 output on Windows and unbuffered for live progress
+import os
+os.environ.setdefault("PYTHONUNBUFFERED", "1")
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if hasattr(sys.stderr, "reconfigure"):
@@ -186,9 +188,8 @@ def status(config_path):
 
 @cli.command()
 @click.option("--config", "config_path", default="config.yaml", help="Config file path")
-@click.option("--no-indeed", is_flag=True, default=False, help="Skip Playwright Indeed scrape (faster, API-only)")
-def discover(config_path, no_indeed):
-    """Discover and rank new jobs from RSS feeds"""
+def discover(config_path):
+    """Discover and rank new jobs from Indeed RSS (+ RemoteOK/Remotive fallback)"""
     config = load_config(config_path)
     ensure_dirs("data/tailored", "output/logs", "output/reports")
 
@@ -204,7 +205,7 @@ def discover(config_path, no_indeed):
     model = config.get("anthropic", {}).get("model", "claude-sonnet-4-6")
 
     console.print(f"[cyan]Pulling job feeds for {len(searches)} searches...[/cyan]")
-    candidates = discover_jobs(searches, tracker, use_indeed=not no_indeed)
+    candidates = discover_jobs(searches, tracker)
     console.print(f"[green]Found {len(candidates)} new candidates after deduplication[/green]")
 
     if not candidates:

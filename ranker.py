@@ -88,24 +88,24 @@ def rank_jobs(candidates: list[dict], resume_data: dict, model: str, tracker: di
     for i, job in enumerate(candidates):
         url = job["url"]
         min_score = job.get("min_match_score", 60)
-        print(f"  [{i+1}/{len(candidates)}] Analyzing: {job.get('title', url)[:60]}")
+        print(f"  [{i+1}/{len(candidates)}] Analyzing: {job.get('title', url)[:60]}", flush=True)
 
         # Fetch and analyze JD
         try:
             jd_text = fetch_jd(url)
         except Exception as e:
-            print(f"    [skip] JD fetch failed: {e}")
+            print(f"    [skip] JD fetch failed: {e}", flush=True)
             continue
 
         try:
             jd_analysis = analyze_jd(jd_text, resume_data, model)
         except Exception as e:
-            print(f"    [skip] JD analysis failed: {e}")
+            print(f"    [skip] JD analysis failed: {e}", flush=True)
             continue
 
         score = jd_analysis.get("match_score", 0)
         if score < min_score:
-            print(f"    [skip] Score {score} < threshold {min_score}")
+            print(f"    [skip] Score {score} < threshold {min_score}", flush=True)
             continue
 
         # Use company from JD analysis if richer than RSS
@@ -117,7 +117,7 @@ def rank_jobs(candidates: list[dict], resume_data: dict, model: str, tracker: di
         fit = _fit_summary(jd_analysis, model)
 
         # Company signal enrichment
-        print(f"    Fetching company signal for: {company}")
+        print(f"    Fetching company signal for: {company}", flush=True)
         signal = _company_signal(company)
 
         entry = {
