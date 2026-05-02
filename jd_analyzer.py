@@ -31,7 +31,36 @@ Return JSON only with these fields:
 Respond with raw JSON only, no markdown fences."""
 
 
+_SPA_DOMAINS = ("careers.microsoft.com", "greenhouse.io", "lever.co", "workday.com")
+
+
+def _is_spa(url: str) -> bool:
+    return any(d in url for d in _SPA_DOMAINS)
+
+
+def _fetch_via_playwright(url: str) -> str:
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        page.goto(url, wait_until="networkidle", timeout=45000)
+        page.wait_for_timeout(2000)
+        html = page.content()
+        browser.close()
+    return _extract_text(html)
+
+
 def fetch_jd(url: str, retries: int = 3) -> str:
+    if _is_spa(url):
+        last_err = None
+        for i in range(retries):
+            try:
+                return _fetch_via_playwright(url)
+            except Exception as e:
+                last_err = e
+                time.sleep(2 ** i)
+        raise RuntimeError(f"Playwright fetch failed after {retries} attempts: {last_err}")
+
     last_err = None
     for i in range(retries):
         try:

@@ -39,7 +39,7 @@ def _structure_text(text: str) -> dict:
 
     name = lines[0] if lines else ""
     email = _find(r"[\w.+-]+@[\w-]+\.[\w.-]+", text)
-    phone = _find(r"(\+?\d[\d\s().-]{8,}\d)", text)
+    phone = _find(r"(\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4})", text)
     linkedin = _find(r"(linkedin\.com/in/[\w-]+)", text, flags=re.I)
 
     sections = _split_sections(lines)
@@ -68,9 +68,12 @@ def _find(pattern: str, text: str, flags: int = 0) -> str:
 SECTION_KEYWORDS = {
     "summary": ["summary", "profile", "objective", "about"],
     "experience": ["experience", "employment", "work history", "professional experience"],
-    "skills": ["skills", "technical skills", "core competencies", "technologies"],
+    "skills": ["skills", "technical skills", "core competencies", "technologies",
+               "core capabilities", "capabilities"],
     "education": ["education", "academic"],
-    "certifications": ["certifications", "certificates", "licenses"],
+    "certifications": ["certifications", "certificates", "licenses",
+                       "certifications & specializations", "certifications and specializations",
+                       "specializations"],
 }
 
 
@@ -94,7 +97,10 @@ def _split_sections(lines: list[str]) -> dict:
         elif current:
             out[current].append(line)
 
-    if isinstance(out["skills"], list) and len(out["skills"]) == 1:
-        out["skills"] = [s.strip() for s in re.split(r"[,;|·•]", out["skills"][0]) if s.strip()]
+    if isinstance(out["skills"], list) and out["skills"]:
+        flat = []
+        for line in out["skills"]:
+            flat.extend(s.strip() for s in re.split(r"[,;|·•]", line) if s.strip())
+        out["skills"] = flat
 
     return out

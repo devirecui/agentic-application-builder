@@ -8,7 +8,7 @@ personal:
   website: ""
 
 resume:
-  base_path: "data/resume_base.pdf"
+  base_path: "data/resume_base.docx"
   tailored_output_dir: "data/tailored"
 
 anthropic:
@@ -28,3 +28,16 @@ tracker:
 logging:
   level: "INFO"
   output_dir: "output/logs"
+
+discovery:
+  run_every_hours: 24
+  searches:
+    - query: "Cloud Solution Architect Azure AI"
+      location: "remote"
+      min_match_score: 65
+    - query: "Partner Technical Specialist Azure AI"
+      location: "remote"
+      min_match_score: 65
+    - query: "AI Architect Azure OpenAI agentic"
+      location: "remote"
+      min_match_score: 65

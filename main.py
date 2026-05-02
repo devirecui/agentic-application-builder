@@ -3,6 +3,12 @@ import os
 import sys
 import yaml
 import click
+
+# Ensure UTF-8 output on Windows
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
@@ -15,6 +21,10 @@ from jd_analyzer import fetch_jd, analyze_jd
 from resume_tailor import tailor_resume, save_tailored_resume
 from browser_agent import apply_to_job
 from tracker import load_tracker, save_tracker, is_duplicate, add_application, print_status
+from discovery_agent import discover_jobs
+from ranker import rank_jobs
+from weekly_report import generate_report
+from prepare import prepare_job
 
 console = Console()
 
@@ -172,6 +182,70 @@ def status(config_path):
     tracker_path = config.get("tracker", {}).get("path", "data/applications.json")
     tracker = load_tracker(tracker_path)
     print_status(tracker)
+
+
+@cli.command()
+@click.option("--config", "config_path", default="config.yaml", help="Config file path")
+@click.option("--no-indeed", is_flag=True, default=False, help="Skip Playwright Indeed scrape (faster, API-only)")
+def discover(config_path, no_indeed):
+    """Discover and rank new jobs from RSS feeds"""
+    config = load_config(config_path)
+    ensure_dirs("data/tailored", "output/logs", "output/reports")
+
+    tracker_path = config.get("tracker", {}).get("path", "data/applications.json")
+    tracker = load_tracker(tracker_path)
+
+    searches = config.get("discovery", {}).get("searches", [])
+    if not searches:
+        console.print("[red]No searches configured in config.yaml under discovery.searches[/red]")
+        return
+
+    resume_path = config.get("resume", {}).get("base_path", "data/resume_base.docx")
+    model = config.get("anthropic", {}).get("model", "claude-sonnet-4-6")
+
+    console.print(f"[cyan]Pulling job feeds for {len(searches)} searches...[/cyan]")
+    candidates = discover_jobs(searches, tracker, use_indeed=not no_indeed)
+    console.print(f"[green]Found {len(candidates)} new candidates after deduplication[/green]")
+
+    if not candidates:
+        console.print("[yellow]No new jobs to process.[/yellow]")
+        return
+
+    console.print(f"[cyan]Parsing resume...[/cyan]")
+    resume_data = parse_resume(resume_path)
+
+    console.print(f"[cyan]Ranking {len(candidates)} candidates (fetching JDs + scoring)...[/cyan]")
+    ranked = rank_jobs(candidates, resume_data, model, tracker, tracker_path)
+
+    console.print(f"\n[bold green]Discovery complete: {len(ranked)} jobs passed threshold[/bold green]")
+    for i, job in enumerate(ranked[:10], 1):
+        score = job["match_score"]
+        color = "green" if score >= 80 else "yellow" if score >= 65 else "red"
+        console.print(
+            f"  {i:>2}. [{color}]{score:>3}%[/{color}]  "
+            f"[bold]{job['title']}[/bold]  @ {job['company']}"
+        )
+
+    console.print(f"\n[dim]Run 'python main.py report' to see the full ranked table.[/dim]")
+
+
+@cli.command()
+@click.option("--config", "config_path", default="config.yaml", help="Config file path")
+def report(config_path):
+    """Show weekly ranked job report"""
+    config = load_config(config_path)
+    ensure_dirs("output/reports")
+    tracker_path = config.get("tracker", {}).get("path", "data/applications.json")
+    generate_report(tracker_path, output_dir="output/reports")
+
+
+@cli.command()
+@click.option("--url", required=True, help="URL of a discovered job to prepare")
+@click.option("--config", "config_path", default="config.yaml", help="Config file path")
+def prepare(url, config_path):
+    """Tailor resume for a discovered job"""
+    config = load_config(config_path)
+    prepare_job(url, config)
 
 
 if __name__ == "__main__":
