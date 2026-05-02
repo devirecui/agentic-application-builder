@@ -11,12 +11,24 @@ from jd_analyzer import fetch_jd, analyze_jd
 from tracker import add_application, is_duplicate
 
 
+LOW_PAY_THRESHOLD = 150_000
+
 FIT_PROMPT = """Given this JD analysis, write exactly ONE sentence (under 25 words) explaining
 whether this role is a strong fit and why. Be specific — mention the most relevant strength
 and biggest gap if applicable.
 
 JD ANALYSIS:
 {jd_analysis}"""
+
+
+def _format_salary(salary_min, salary_max) -> str:
+    if salary_min is None and salary_max is None:
+        return ""
+    if salary_min and salary_max:
+        return f"${int(salary_min/1000)}k-${int(salary_max/1000)}k"
+    if salary_min:
+        return f"${int(salary_min/1000)}k+"
+    return f"up to ${int(salary_max/1000)}k"
 
 
 def _fit_summary(jd_analysis: dict, model: str) -> str:
@@ -108,27 +120,35 @@ def rank_jobs(candidates: list[dict], resume_data: dict, model: str, tracker: di
             print(f"    [skip] Score {score} < threshold {min_score}", flush=True)
             continue
 
-        # Use company from JD analysis if richer than RSS
+        # Use company from JD analysis if richer than source
         company = jd_analysis.get("company") or job.get("company", "Unknown")
-        role = jd_analysis.get("role") or job.get("title", "Unknown")
-        gaps = jd_analysis.get("gaps", [])[:3]
+        role    = jd_analysis.get("role") or job.get("title", "Unknown")
+        gaps    = jd_analysis.get("gaps", [])[:3]
 
-        # Generate fit summary
+        # Salary signal from Adzuna
+        sal_min  = job.get("salary_min")
+        sal_max  = job.get("salary_max")
+        sal_str  = _format_salary(sal_min, sal_max)
+
+        # Generate fit summary; append low-pay flag when below threshold
         fit = _fit_summary(jd_analysis, model)
+        if sal_min is not None and sal_min < LOW_PAY_THRESHOLD:
+            fit = f"[LOW PAY: {sal_str}] {fit}"
 
         # Company signal enrichment
         print(f"    Fetching company signal for: {company}", flush=True)
         signal = _company_signal(company)
 
         entry = {
-            "title": role,
-            "company": company,
-            "url": url,
-            "match_score": score,
-            "top_gaps": gaps,
-            "fit_summary": fit,
+            "title":         role,
+            "company":       company,
+            "url":           url,
+            "match_score":   score,
+            "top_gaps":      gaps,
+            "fit_summary":   fit,
             "company_signal": signal,
-            "jd_analysis": jd_analysis,
+            "salary_signal": sal_str,
+            "jd_analysis":   jd_analysis,
         }
         results.append(entry)
 
@@ -148,9 +168,10 @@ def rank_jobs(candidates: list[dict], resume_data: dict, model: str, tracker: di
             # Patch in extra fields
             for app in tracker["applications"]:
                 if app["url"] == url:
-                    app["top_gaps"] = gaps
-                    app["fit_summary"] = fit
+                    app["top_gaps"]      = gaps
+                    app["fit_summary"]   = fit
                     app["company_signal"] = signal
+                    app["salary_signal"] = sal_str
                     break
             save_tracker(tracker, tracker_path)
 

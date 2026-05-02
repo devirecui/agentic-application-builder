@@ -32,21 +32,13 @@ logging:
 discovery:
   run_every_hours: 24
   searches:
-    - query: '"Cloud Solution Architect" "Azure AI" remote'
-      location: "remote"
-      min_match_score: 50
-    - query: '"Partner Technical Specialist" Microsoft remote'
-      location: "remote"
-      min_match_score: 50
-    - query: '"AI Architect" "Azure OpenAI" remote'
-      location: "remote"
-      min_match_score: 50
-    - query: '"Agentic AI" architect remote'
-      location: "remote"
-      min_match_score: 50
-    - query: '"AI Platform" architect "co-sell" remote'
-      location: "remote"
-      min_match_score: 50
-    - query: '"Hyperscaler" AI architect remote'
-      location: "remote"
-      min_match_score: 50
+    - query: "Cloud Solution Architect Azure AI remote"
+      min_match_score: 65
+    - query: "Partner Technical Specialist Microsoft Azure remote"
+      min_match_score: 65
+    - query: "AI Architect Azure OpenAI agentic remote"
+      min_match_score: 65
+    - query: "Senior AI Architect Microsoft partner remote"
+      min_match_score: 65
+    - query: "Hyperscaler AI architect remote"
+      min_match_score: 60

@@ -55,39 +55,44 @@ def generate_report(tracker_path: str, output_dir: str = "output/reports") -> No
         expand=True,
         min_width=80,
     )
-    table.add_column("#", justify="right", style="bold", no_wrap=True, min_width=2)
-    table.add_column("Sc", justify="right", no_wrap=True, min_width=3)
-    table.add_column("Title", ratio=2, no_wrap=False)
-    table.add_column("Company", ratio=1, no_wrap=False)
-    table.add_column("Top Gap", ratio=1, no_wrap=False)
+    table.add_column("#",          justify="right", style="bold", no_wrap=True, min_width=2)
+    table.add_column("Sc",         justify="right", no_wrap=True, min_width=3)
+    table.add_column("Title",      ratio=2, no_wrap=False)
+    table.add_column("Company",    ratio=1, no_wrap=False)
+    table.add_column("Salary",     ratio=1, no_wrap=True)
+    table.add_column("Top Gap",    ratio=1, no_wrap=False)
     table.add_column("Fit Summary", ratio=3, no_wrap=False)
-    table.add_column("Signal", ratio=1, no_wrap=False)
+    table.add_column("Signal",     ratio=1, no_wrap=False)
 
     md_rows = []
 
     for rank, app in enumerate(discovered, 1):
-        score = app.get("match_score", 0)
-        color = _row_color(score)
-        gaps = app.get("top_gaps") or app.get("gaps", [])
+        score   = app.get("match_score", 0)
+        color   = _row_color(score)
+        gaps    = app.get("top_gaps") or app.get("gaps", [])
         top_gap = gaps[0] if gaps else "-"
-        fit = app.get("fit_summary") or app.get("notes", "-")
-        signal = app.get("company_signal", "no data")
-        url = app.get("url", "")
-        role = app.get("role", app.get("title", "-"))
+        fit     = app.get("fit_summary") or app.get("notes", "-")
+        signal  = app.get("company_signal", "no data")
+        salary  = app.get("salary_signal", "")
+        url     = app.get("url", "")
+        role    = app.get("role", app.get("title", "-"))
         company = app.get("company", "-")
+
+        sal_color = "red" if salary and "LOW PAY" in fit else "default"
 
         table.add_row(
             str(rank),
             Text(str(score), style=color),
             role,
             company,
+            Text(salary or "-", style=sal_color),
             top_gap,
             fit,
             signal[:40],
         )
 
         md_rows.append(
-            f"| {rank} | {score} | {role} | {company} | {top_gap} | {fit} | {signal} | {url} |"
+            f"| {rank} | {score} | {role} | {company} | {salary or '-'} | {top_gap} | {fit} | {signal} | {url} |"
         )
 
     console.print(table)
@@ -111,8 +116,8 @@ def generate_report(tracker_path: str, output_dir: str = "output/reports") -> No
     stamp = datetime.now().strftime("%Y%m%d")
     md_path = os.path.join(output_dir, f"{stamp}_weekly.md")
 
-    header = "| Rank | Score | Title | Company | Top Gap | Fit Summary | Company Signal | URL |\n"
-    sep = "|------|-------|-------|---------|---------|-------------|----------------|-----|\n"
+    header = "| Rank | Score | Title | Company | Salary | Top Gap | Fit Summary | Company Signal | URL |\n"
+    sep    = "|------|-------|-------|---------|--------|---------|-------------|----------------|-----|\n"
     rec_section = "\n## Recommended This Week\n\n"
     for i, app in enumerate(discovered[:5], 1):
         rec_section += (

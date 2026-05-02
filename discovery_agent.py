@@ -1,132 +1,128 @@
 """
-discovery_agent.py — Pull job listings from multiple sources.
+discovery_agent.py — Pull job listings from Adzuna (primary) and RemoteOK (fallback).
 
-Primary:   Indeed RSS  (https://www.indeed.com/rss?q=QUERY&l=LOC&sort=date)
-Secondary: RemoteOK public JSON API  (fallback if Indeed 403s)
-           Remotive public JSON API  (fallback if Indeed 403s)
+Primary:  Adzuna Jobs Search API  https://api.adzuna.com/v1/api/jobs/us/search/1
+Fallback: RemoteOK public JSON API (no auth, startup-heavy but always available)
+
+Adzuna credentials required in .env:
+  ADZUNA_APP_ID=your_app_id
+  ADZUNA_APP_KEY=your_app_key
 """
+import os
 import re
 import sys
 import time
-import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
-from email.utils import parsedate_to_datetime
-from urllib.parse import quote_plus, urlencode
+from dotenv import load_dotenv
 import httpx
+
+load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
+_ADZUNA_BASE = "https://api.adzuna.com/v1/api/jobs/us/search/1"
 _SEVEN_DAYS_AGO = datetime.now(timezone.utc) - timedelta(days=7)
 
-_RSS_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-}
+
+# ── Adzuna (primary) ─────────────────────────────────────────────────────────
+
+def _adzuna_creds() -> tuple[str, str]:
+    app_id  = os.getenv("ADZUNA_APP_ID", "")
+    app_key = os.getenv("ADZUNA_APP_KEY", "")
+    if not app_id or not app_key:
+        raise EnvironmentError(
+            "Adzuna credentials missing. Add to .env:\n"
+            "  ADZUNA_APP_ID=your_app_id\n"
+            "  ADZUNA_APP_KEY=your_app_key\n"
+            "Sign up free at https://developer.adzuna.com/"
+        )
+    return app_id, app_key
 
 
-# ── Indeed RSS ───────────────────────────────────────────────────────────────
-
-def _build_indeed_rss_url(query: str, location: str) -> str:
-    params = urlencode({"q": query, "l": location, "sort": "date", "limit": "25"})
-    return f"https://www.indeed.com/rss?{params}"
-
-
-def _parse_pubdate(text: str) -> datetime | None:
+def _adzuna_jobs(query: str, retries: int = 3) -> list[dict]:
     try:
-        return parsedate_to_datetime(text.strip())
-    except Exception:
-        return None
+        app_id, app_key = _adzuna_creds()
+    except EnvironmentError as e:
+        print(f"    [error] {e}", flush=True)
+        return []
 
-
-def _strip_html(text: str) -> str:
-    text = re.sub(r"<[^>]+>", " ", text)
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def _parse_indeed_rss(xml_text: str) -> list[dict]:
-    jobs: list[dict] = []
-    try:
-        root = ET.fromstring(xml_text)
-    except ET.ParseError:
-        return jobs
-
-    channel = root.find("channel")
-    if channel is None:
-        return jobs
-
-    for item in channel.findall("item"):
-        raw_title = (item.findtext("title") or "").strip()
-        link      = (item.findtext("link") or "").strip()
-        pub_raw   = (item.findtext("pubDate") or "").strip()
-        desc      = _strip_html(item.findtext("description") or "")[:400]
-
-        if not link or not raw_title:
-            continue
-
-        # Filter to last 7 days
-        pub_dt = _parse_pubdate(pub_raw)
-        if pub_dt and pub_dt < _SEVEN_DAYS_AGO:
-            continue
-
-        # Indeed title format: "Job Title - Company Name"
-        if " - " in raw_title:
-            parts = raw_title.rsplit(" - ", 1)
-            title   = parts[0].strip()
-            company = parts[1].strip()
-        else:
-            title   = raw_title
-            company = ""
-
-        jobs.append({
-            "title":   title,
-            "company": company,
-            "url":     link,
-            "snippet": desc,
-        })
-
-    return jobs
-
-
-def _indeed_rss_jobs(query: str, location: str, retries: int = 3) -> list[dict]:
-    url = _build_indeed_rss_url(query, location)
+    params = {
+        "app_id":           app_id,
+        "app_key":          app_key,
+        "results_per_page": 50,
+        "what":             query,
+        "where":            "remote",
+        "sort_by":          "date",
+        "max_days_old":     7,
+        "content-type":     "application/json",
+    }
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept":     "application/json",
+    }
     last_err = None
     for i in range(retries):
         try:
-            with httpx.Client(
-                follow_redirects=True,
-                timeout=30.0,
-                headers=_RSS_HEADERS,
-            ) as client:
-                resp = client.get(url)
+            with httpx.Client(follow_redirects=True, timeout=30.0, headers=headers) as client:
+                resp = client.get(_ADZUNA_BASE, params=params)
                 resp.raise_for_status()
-                return _parse_indeed_rss(resp.text)
+                data = resp.json()
+            break
         except httpx.HTTPStatusError as e:
-            last_err = e.response.status_code
-            if e.response.status_code == 403:
-                break   # Won't recover with retries — fall through to secondaries
+            last_err = f"HTTP {e.response.status_code}"
+            if e.response.status_code in (401, 403):
+                print(f"    [error] Adzuna auth failed ({last_err}) — check APP_ID/APP_KEY", flush=True)
+                return []
             time.sleep(2 ** i)
         except Exception as e:
-            last_err = str(e)[:60]
+            last_err = str(e)[:80]
             time.sleep(2 ** i)
-    print(f"    [warn] Indeed RSS unavailable ({last_err}); using secondary sources", flush=True)
-    return []
+    else:
+        print(f"    [warn] Adzuna fetch failed ({last_err})", flush=True)
+        return []
+
+    results = []
+    for job in data.get("results", []):
+        # Filter to last 7 days
+        created_raw = job.get("created", "")
+        if created_raw:
+            try:
+                created_dt = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
+                if created_dt < _SEVEN_DAYS_AGO:
+                    continue
+            except (ValueError, TypeError):
+                pass
+
+        url     = job.get("redirect_url", "")
+        title   = job.get("title", "").strip()
+        company = job.get("company", {}).get("display_name", "").strip()
+        desc    = re.sub(r"\s+", " ", job.get("description", "")).strip()[:400]
+        sal_min = job.get("salary_min")
+        sal_max = job.get("salary_max")
+
+        if not url or not title:
+            continue
+
+        results.append({
+            "title":      title,
+            "company":    company,
+            "url":        url,
+            "snippet":    desc,
+            "salary_min": sal_min,
+            "salary_max": sal_max,
+            "created":    created_raw,
+        })
+
+    return results
 
 
-# ── RemoteOK (secondary) ─────────────────────────────────────────────────────
+# ── RemoteOK (fallback only) ─────────────────────────────────────────────────
 
 def _remoteok_jobs(query: str) -> list[dict]:
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json",
+        "Accept":     "application/json",
     }
     try:
         with httpx.Client(follow_redirects=True, timeout=30.0, headers=headers) as client:
@@ -137,10 +133,9 @@ def _remoteok_jobs(query: str) -> list[dict]:
         return []
 
     jobs = [item for item in data if isinstance(item, dict) and item.get("position")]
-
-    # Strip punctuation/quotes from query for keyword matching
     clean = re.sub(r'["\']', "", query)
     keywords = [w.lower() for w in re.split(r"[\s,]+", clean) if len(w) > 2]
+
     results = []
     for job in jobs:
         haystack = " ".join([
@@ -151,64 +146,31 @@ def _remoteok_jobs(query: str) -> list[dict]:
         ]).lower()
         if sum(1 for kw in keywords if kw in haystack) >= max(1, len(keywords) // 2):
             results.append({
-                "title":   job.get("position", ""),
-                "company": job.get("company", ""),
-                "url":     job.get("url") or f"https://remoteok.com/remote-jobs/{job.get('id', '')}",
-                "snippet": re.sub(r"<[^>]+>", " ", job.get("description", ""))[:300],
+                "title":      job.get("position", ""),
+                "company":    job.get("company", ""),
+                "url":        job.get("url") or f"https://remoteok.com/remote-jobs/{job.get('id', '')}",
+                "snippet":    re.sub(r"<[^>]+>", " ", job.get("description", ""))[:300],
+                "salary_min": None,
+                "salary_max": None,
+                "created":    "",
             })
     return results
-
-
-# ── Remotive (secondary) ─────────────────────────────────────────────────────
-
-def _remotive_jobs(query: str) -> list[dict]:
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "application/json",
-    }
-    clean = re.sub(r'["\']', "", query)
-    words = [w for w in re.split(r"[\s,]+", clean) if len(w) > 3][:3]
-    search_term = " ".join(words)
-    try:
-        with httpx.Client(follow_redirects=True, timeout=30.0, headers=headers) as client:
-            resp = client.get(
-                "https://remotive.com/api/remote-jobs",
-                params={"search": search_term, "limit": 20},
-            )
-            resp.raise_for_status()
-            data = resp.json()
-    except Exception:
-        return []
-
-    return [
-        {
-            "title":   job.get("title", ""),
-            "company": job.get("company_name", ""),
-            "url":     job.get("url", ""),
-            "snippet": re.sub(r"<[^>]+>", " ", job.get("description", ""))[:300],
-        }
-        for job in data.get("jobs", [])
-    ]
 
 
 # ── Public entry point ───────────────────────────────────────────────────────
 
 def discover_jobs(searches: list[dict], tracker: dict) -> list[dict]:
     """
-    For each search:
-      1. Try Indeed RSS (primary — quoted phrases, date-filtered)
-      2. Fall back to RemoteOK + Remotive if Indeed returns nothing
-
-    Deduplicates against tracker.
-    Returns new candidate job dicts with min_match_score attached.
+    For each search config, query Adzuna (primary). Falls back to RemoteOK if
+    Adzuna returns nothing (no creds, rate limit, etc.).
+    Deduplicates against tracker. Returns new candidates with min_match_score attached.
     """
     existing_urls: set[str] = {app.get("url") for app in tracker.get("applications", [])}
-    seen_urls:    set[str]  = set()
-    candidates:   list[dict] = []
+    seen_urls:     set[str] = set()
+    candidates:    list[dict] = []
 
     for search in searches:
-        query    = search.get("query", "")
-        location = search.get("location", "remote")
+        query     = search.get("query", "")
         min_score = search.get("min_match_score", 60)
 
         if not query:
@@ -216,19 +178,15 @@ def discover_jobs(searches: list[dict], tracker: dict) -> list[dict]:
 
         print(f"  Searching: {query!r}", flush=True)
 
-        # Primary: Indeed RSS
-        batch = _indeed_rss_jobs(query, location)
-        indeed_count = len(batch)
+        batch  = _adzuna_jobs(query)
+        source = "Adzuna"
 
-        # Secondary fallback
         if not batch:
-            time.sleep(0.5)
-            batch.extend(_remoteok_jobs(query))
-            time.sleep(0.5)
-            batch.extend(_remotive_jobs(query))
+            print(f"    Adzuna empty — trying RemoteOK fallback...", flush=True)
+            batch  = _remoteok_jobs(query)
+            source = "RemoteOK"
 
         raw_count = len(batch)
-
         added = 0
         for job in batch:
             url = job.get("url", "")
@@ -240,8 +198,7 @@ def discover_jobs(searches: list[dict], tracker: dict) -> list[dict]:
             candidates.append(job)
             added += 1
 
-        source = "Indeed RSS" if indeed_count else "RemoteOK/Remotive"
         print(f"    {raw_count} raw  |  {added} new after dedup  [{source}]", flush=True)
-        time.sleep(0.5)
+        time.sleep(0.3)
 
     return candidates
