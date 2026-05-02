@@ -31,14 +31,15 @@ logging:
 
 discovery:
   run_every_hours: 24
+  max_days_old: 30
   searches:
-    - query: "Cloud Solution Architect Azure AI remote"
+    - query: "AI Architect Azure"
       min_match_score: 65
-    - query: "Partner Technical Specialist Microsoft Azure remote"
+    - query: "Generative AI Architect"
       min_match_score: 65
-    - query: "AI Architect Azure OpenAI agentic remote"
+    - query: "Agentic AI Architect"
       min_match_score: 65
-    - query: "Senior AI Architect Microsoft partner remote"
+    - query: "Cloud Solution Architect Azure"
       min_match_score: 65
-    - query: "Hyperscaler AI architect remote"
+    - query: "AI Platform Architect"
       min_match_score: 60

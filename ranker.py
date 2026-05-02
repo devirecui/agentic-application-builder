@@ -47,9 +47,15 @@ def _fit_summary(jd_analysis: dict, model: str) -> str:
         return f"Score {jd_analysis.get('match_score', 0)}: {', '.join(jd_analysis.get('gaps', [])[:2])}"
 
 
+_company_signal_cache: dict[str, str] = {}
+
+
 def _company_signal(company: str) -> str:
     if not company or company in ("Unknown", ""):
         return "no data"
+
+    if company in _company_signal_cache:
+        return _company_signal_cache[company]
 
     signals = []
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -79,7 +85,9 @@ def _company_signal(company: str) -> str:
             pass
         time.sleep(0.5)
 
-    return "; ".join(signals) if signals else "no data"
+    result = "; ".join(signals) if signals else "no data"
+    _company_signal_cache[company] = result
+    return result
 
 
 def _urlencode(s: str) -> str:
@@ -102,12 +110,19 @@ def rank_jobs(candidates: list[dict], resume_data: dict, model: str, tracker: di
         min_score = job.get("min_match_score", 60)
         print(f"  [{i+1}/{len(candidates)}] Analyzing: {job.get('title', url)[:60]}", flush=True)
 
-        # Fetch and analyze JD
+        # Fetch full JD; fall back to Adzuna snippet when redirect is bot-blocked
         try:
             jd_text = fetch_jd(url)
-        except Exception as e:
-            print(f"    [skip] JD fetch failed: {e}", flush=True)
-            continue
+        except Exception as fetch_err:
+            snippet = job.get("snippet", "")
+            if snippet:
+                title   = job.get("title", "")
+                company = job.get("company", "")
+                jd_text = f"Job Title: {title}\nCompany: {company}\n\n{snippet}"
+                print(f"    [fallback] Using Adzuna description ({len(snippet)} chars)", flush=True)
+            else:
+                print(f"    [skip] JD fetch failed, no description available", flush=True)
+                continue
 
         try:
             jd_analysis = analyze_jd(jd_text, resume_data, model)

@@ -204,8 +204,9 @@ def discover(config_path):
     resume_path = config.get("resume", {}).get("base_path", "data/resume_base.docx")
     model = config.get("anthropic", {}).get("model", "claude-sonnet-4-6")
 
-    console.print(f"[cyan]Pulling job feeds for {len(searches)} searches...[/cyan]")
-    candidates = discover_jobs(searches, tracker)
+    max_days_old = config.get("discovery", {}).get("max_days_old", 30)
+    console.print(f"[cyan]Pulling job feeds for {len(searches)} searches (last {max_days_old} days)...[/cyan]")
+    candidates = discover_jobs(searches, tracker, max_days_old=max_days_old)
     console.print(f"[green]Found {len(candidates)} new candidates after deduplication[/green]")
 
     if not candidates:

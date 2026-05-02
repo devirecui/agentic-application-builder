@@ -40,7 +40,7 @@ def _adzuna_creds() -> tuple[str, str]:
     return app_id, app_key
 
 
-def _adzuna_jobs(query: str, retries: int = 3) -> list[dict]:
+def _adzuna_jobs(query: str, max_days_old: int = 30, retries: int = 3) -> list[dict]:
     try:
         app_id, app_key = _adzuna_creds()
     except EnvironmentError as e:
@@ -52,16 +52,16 @@ def _adzuna_jobs(query: str, retries: int = 3) -> list[dict]:
         "app_key":          app_key,
         "results_per_page": 50,
         "what":             query,
-        "where":            "remote",
         "sort_by":          "date",
-        "max_days_old":     7,
-        "content-type":     "application/json",
+        "max_days_old":     max_days_old,
     }
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept":     "application/json",
+        "User-Agent":  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept":      "application/json",
+        "Content-Type": "application/json",
     }
     last_err = None
+    data = None
     for i in range(retries):
         try:
             with httpx.Client(follow_redirects=True, timeout=30.0, headers=headers) as client:
@@ -81,6 +81,9 @@ def _adzuna_jobs(query: str, retries: int = 3) -> list[dict]:
     else:
         print(f"    [warn] Adzuna fetch failed ({last_err})", flush=True)
         return []
+
+    total = data.get("count", 0)
+    print(f"    Adzuna: {total} total listings matched", flush=True)
 
     results = []
     for job in data.get("results", []):
@@ -159,7 +162,7 @@ def _remoteok_jobs(query: str) -> list[dict]:
 
 # ── Public entry point ───────────────────────────────────────────────────────
 
-def discover_jobs(searches: list[dict], tracker: dict) -> list[dict]:
+def discover_jobs(searches: list[dict], tracker: dict, max_days_old: int = 30) -> list[dict]:
     """
     For each search config, query Adzuna (primary). Falls back to RemoteOK if
     Adzuna returns nothing (no creds, rate limit, etc.).
@@ -167,6 +170,8 @@ def discover_jobs(searches: list[dict], tracker: dict) -> list[dict]:
     """
     existing_urls: set[str] = {app.get("url") for app in tracker.get("applications", [])}
     seen_urls:     set[str] = set()
+    # Title+company key dedup catches same role posted across multiple locations
+    seen_title_company: set[str] = set()
     candidates:    list[dict] = []
 
     for search in searches:
@@ -178,7 +183,7 @@ def discover_jobs(searches: list[dict], tracker: dict) -> list[dict]:
 
         print(f"  Searching: {query!r}", flush=True)
 
-        batch  = _adzuna_jobs(query)
+        batch  = _adzuna_jobs(query, max_days_old=max_days_old)
         source = "Adzuna"
 
         if not batch:
@@ -189,10 +194,17 @@ def discover_jobs(searches: list[dict], tracker: dict) -> list[dict]:
         raw_count = len(batch)
         added = 0
         for job in batch:
-            url = job.get("url", "")
+            url     = job.get("url", "")
+            title   = job.get("title", "").lower().strip()
+            company = job.get("company", "").lower().strip()
+            tc_key  = f"{company}|{title}"
             if not url or url in existing_urls or url in seen_urls:
                 continue
+            if tc_key and tc_key in seen_title_company:
+                continue
             seen_urls.add(url)
+            if tc_key:
+                seen_title_company.add(tc_key)
             job["min_match_score"] = min_score
             job["search_query"]    = query
             candidates.append(job)
