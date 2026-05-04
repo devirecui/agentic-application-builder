@@ -1,6 +1,8 @@
 anthropic>=0.25.0
 python-dotenv>=1.0.0
-playwright>=1.40.0
+playwright>=1.44.0
+# Note: browser binaries are pre-installed in the Docker base image at $PLAYWRIGHT_BROWSERS_PATH
+# For local dev outside Docker, run: playwright install chromium
 pdfplumber>=0.10.0
 python-docx>=1.1.0
 pyyaml>=6.0

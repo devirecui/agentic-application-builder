@@ -291,7 +291,7 @@ def discover(config_path, auto_prepare):
         for i, job in enumerate(ranked, 1):
             console.print(
                 f"  Tailoring [{i}/{len(ranked)}]: {job['title'][:50]} @ {job['company']}",
-                end="  ", flush=True
+                end="  "
             )
             # will print inline; prepare_batch handles the actual work
         console.print()  # newline after progress hints

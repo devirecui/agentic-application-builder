@@ -1,0 +1,8 @@
+services:
+  job-apply-agent:
+    build: .
+    volumes:
+      - ./data:/app/data
+      - ./output:/app/output
+    env_file: .env
+    restart: unless-stopped
