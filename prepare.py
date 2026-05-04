@@ -16,6 +16,52 @@ from tracker import load_tracker, save_tracker
 console = Console()
 
 
+def prepare_batch(ranked: list[dict], resume_data: dict, config: dict) -> list[dict]:
+    """
+    Tailor resumes for all ranked entries using their already-computed jd_analysis.
+    Skips JD re-fetch. Updates tracker to status: ready. Returns summary list.
+    """
+    tracker_path = config.get("tracker", {}).get("path", "data/applications.json")
+    model        = config.get("anthropic", {}).get("model", "claude-sonnet-4-6")
+    output_dir   = config.get("resume", {}).get("tailored_output_dir", "data/tailored")
+
+    tracker = load_tracker(tracker_path)
+    results = []
+
+    for entry in ranked:
+        jd_analysis = entry.get("jd_analysis", {})
+        company     = entry.get("company", "company")
+        role        = entry.get("title", "role")
+        url         = entry.get("url", "")
+        score       = entry.get("match_score", 0)
+        salary      = entry.get("salary_signal", "")
+
+        try:
+            tailored_md   = tailor_resume(resume_data, jd_analysis, model)
+            tailored_path = save_tailored_resume(tailored_md, company, role, output_dir)
+        except Exception as e:
+            print(f"    [error] Tailoring failed for {role} @ {company}: {e}", flush=True)
+            results.append({
+                "title": role, "company": company, "score": score,
+                "salary": salary, "tailored_path": "[FAILED]",
+            })
+            continue
+
+        for app in tracker["applications"]:
+            if app["url"] == url:
+                app["status"] = "ready"
+                app["tailored_resume"] = tailored_path
+                break
+        save_tracker(tracker, tracker_path)
+
+        results.append({
+            "title": role, "company": company, "score": score,
+            "salary": salary, "tailored_path": tailored_path,
+        })
+
+    return results
+
+
 def load_config(config_path: str = "config.yaml") -> dict:
     with open(config_path, "r") as f:
         return yaml.safe_load(f)

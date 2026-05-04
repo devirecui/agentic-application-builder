@@ -3,19 +3,25 @@
 An agentic job research system that discovers, scores, and helps you prepare tailored applications.
 Research-and-rank first — you decide when to apply.
 
-## Daily Workflow
+## Usage
 
+**Automated (runs every 24 h, tailors everything, saves a report):**
 ```bash
-# 1. Discover and score new jobs from RSS feeds
-python main.py discover
+python main.py run
+```
 
-# 2. Review the ranked shortlist
+**On-demand (discover + tailor all passing jobs in one step):**
+```bash
+python main.py discover --auto-prepare
 python main.py report
+```
 
-# 3. Tailor your resume for a specific role you want to pursue
-python main.py prepare --url "https://..."
-
-# 4. Apply manually using the tailored DOCX from data/tailored/
+**Manual workflow (pick and choose):**
+```bash
+python main.py discover            # score new jobs
+python main.py report              # review ranked table
+python main.py prepare --url "…"   # tailor one specific role
+# apply manually with data/tailored/*.docx
 ```
 
 ## Architecture
@@ -58,9 +64,11 @@ Set `ANTHROPIC_API_KEY` in your environment or a `.env` file.
 
 | Command | Description |
 |---------|-------------|
-| `python main.py discover` | Pull RSS feeds, score all new jobs, write to tracker |
+| `python main.py run` | Start scheduler: discover + auto-prepare every `run_every_hours` |
+| `python main.py discover` | Pull feeds, score all new jobs, write to tracker |
+| `python main.py discover --auto-prepare` | Discover + tailor resume for every job passing threshold |
 | `python main.py report` | Show ranked table of this week's discovered jobs |
-| `python main.py prepare --url URL` | Tailor resume for a specific discovered job |
+| `python main.py prepare --url URL` | Tailor resume for one specific discovered job |
 | `python main.py status` | Show all tracked applications |
 | `python main.py analyze --url URL` | Analyze a JD without tracking |
 | `python main.py apply --url URL` | Manual browser-based application |
