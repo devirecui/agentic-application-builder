@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import sys
+import time
 import yaml
 import click
 from datetime import datetime
@@ -382,6 +383,148 @@ def run_scheduler(config_path):
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):
         console.print("\n[yellow]Scheduler stopped.[/yellow]")
+
+
+def _print_apply_report(tracker: dict) -> None:
+    from rich.text import Text
+    apps = tracker.get("applications", [])
+    relevant = [a for a in apps if a.get("apply_status") in ("applied", "manual", "failed")]
+    if not relevant:
+        console.print("[yellow]No auto-apply results yet.[/yellow]")
+        return
+
+    table = Table(title=f"Auto-Apply Results ({len(relevant)} entries)", show_lines=True, expand=True)
+    table.add_column("Status",  style="bold", no_wrap=True)
+    table.add_column("Score",   justify="right", no_wrap=True, min_width=4)
+    table.add_column("Company", ratio=1)
+    table.add_column("Role",    ratio=2)
+    table.add_column("Board",   no_wrap=True)
+    table.add_column("Notes",   ratio=2)
+
+    status_colors = {"applied": "green", "manual": "yellow", "failed": "red"}
+    priority = {"applied": 0, "manual": 1, "failed": 2}
+
+    for app in sorted(relevant, key=lambda a: (priority.get(a.get("apply_status", ""), 3), -a.get("match_score", 0))):
+        status = app.get("apply_status", "")
+        color  = status_colors.get(status, "default")
+        table.add_row(
+            Text(status, style=color),
+            str(app.get("match_score", "")),
+            app.get("company", ""),
+            app.get("role", ""),
+            app.get("board_type", app.get("board", "-")),
+            (app.get("apply_reason") or app.get("notes", ""))[:80],
+        )
+
+    console.print(table)
+
+
+@cli.command("auto-apply")
+@click.option("--config", "config_path", default="config.yaml", help="Config file path")
+@click.option("--max-applies", default=10, show_default=True, help="Hard stop after N successful applies")
+def auto_apply(config_path, max_applies):
+    """Auto-apply to all eligible tracker entries (Greenhouse/Lever only)."""
+    config      = load_config(config_path)
+    blacklist   = [b.lower() for b in config.get("apply", {}).get("blacklist", [])]
+    tracker_path = config.get("tracker", {}).get("path", "data/applications.json")
+    tracker      = load_tracker(tracker_path)
+
+    if not any("ust" in b for b in blacklist):
+        console.print("[bold red]UST/UST Global not found in config.yaml apply.blacklist -- add it before running.[/bold red]")
+        return
+
+    console.print(f"[green]Blacklist active:[/green] {', '.join(config.get('apply', {}).get('blacklist', []))}")
+
+    eligible = [
+        a for a in tracker["applications"]
+        if a.get("apply_status") == "eligible"
+    ]
+    eligible.sort(key=lambda x: -x.get("match_score", 0))
+
+    console.print(f"[cyan]{len(eligible)} eligible entries queued (hard stop after {max_applies} successes)[/cyan]\n")
+
+    profile      = config.get("personal", {})
+    apply_config = {
+        **config.get("apply", {}),
+        "output_dir": config.get("logging", {}).get("output_dir", "output/logs"),
+    }
+
+    success_count = 0
+
+    for app in eligible:
+        company     = app.get("company", "")
+        role        = app.get("role", "")
+        score       = app.get("match_score", 0)
+        url         = app.get("url", "")
+        resume_path = app.get("tailored_resume", "")
+
+        if any(b in company.lower() for b in blacklist):
+            console.print(f"[yellow][skipped] {role} @ {company} → blacklisted[/yellow]")
+            app["apply_status"] = "skipped"
+            app["apply_reason"] = "blacklisted company"
+            save_tracker(tracker, tracker_path)
+            continue
+
+        if not resume_path or not os.path.exists(resume_path):
+            console.print(f"[red][skipped] {role} @ {company} → tailored resume not found: {resume_path}[/red]")
+            continue
+
+        console.print(f"[bold]Processing ({score}):[/bold] {role} @ {company}")
+        time.sleep(2)  # rate-limit guard between resolution attempts
+
+        try:
+            result = asyncio.run(apply_to_job(url, profile, resume_path, apply_config))
+        except Exception as e:
+            console.print(f"  [red][failed] {role} @ {company} → {e}[/red]")
+            app["apply_status"] = "failed"
+            app["apply_reason"] = str(e)
+            save_tracker(tracker, tracker_path)
+            continue
+
+        board        = result.get("board", "unknown")
+        resolved_url = result.get("resolved_url", url)
+
+        if result["status"] == "manual":
+            console.print(f"  [yellow][manual] {role} @ {company} → destination board: {board}, manual apply required[/yellow]")
+            console.print(f"  URL: {resolved_url}")
+            app["apply_status"] = "manual"
+            app["apply_reason"] = f"destination board: {board}, manual apply required"
+            app["resolved_url"] = resolved_url
+            app["board"]        = board
+
+        elif result.get("success"):
+            console.print(f"  [green][applied] {role} @ {company} (score: {score}) → success[/green]")
+            app["apply_status"] = "applied"
+            app["status"]       = "applied"
+            app["applied_at"]   = datetime.now().isoformat(timespec="seconds")
+            app["board"]        = board
+            success_count += 1
+
+        else:
+            console.print(f"  [red][failed] {role} @ {company} (score: {score}) → failed: {result.get('notes', 'unknown')}[/red]")
+            app["apply_status"] = "failed"
+            app["apply_reason"] = result.get("notes", "")
+            app["board"]        = board
+
+        save_tracker(tracker, tracker_path)
+
+        if success_count >= max_applies:
+            console.print(f"\n[bold yellow]Hard stop: reached {max_applies} successful applies.[/bold yellow]")
+            break
+
+    console.print(f"\n[bold green]Auto-apply complete: {success_count} applied of {len(eligible)} eligible[/bold green]")
+    console.print()
+    _print_apply_report(tracker)
+
+
+@cli.command("apply-report")
+@click.option("--config", "config_path", default="config.yaml", help="Config file path")
+def apply_report(config_path):
+    """Show results table from the last auto-apply run."""
+    config       = load_config(config_path)
+    tracker_path = config.get("tracker", {}).get("path", "data/applications.json")
+    tracker      = load_tracker(tracker_path)
+    _print_apply_report(tracker)
 
 
 if __name__ == "__main__":

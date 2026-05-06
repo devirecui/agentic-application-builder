@@ -21,6 +21,9 @@ apply:
   screenshot_on_error: true
   manual_fallback: true
   timeout: 30000
+  blacklist:
+    - "UST Global"
+    - "UST"
 
 tracker:
   path: "data/applications.json"

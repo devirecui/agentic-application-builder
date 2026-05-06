@@ -47,6 +47,8 @@ def slugify(text: str) -> str:
 
 def detect_board(url: str) -> str:
     host = urlparse(url).netloc.lower()
+    if "adzuna.com" in host:
+        return "adzuna"
     if "linkedin.com" in host:
         return "linkedin"
     if "greenhouse.io" in host or "boards.greenhouse" in host:
