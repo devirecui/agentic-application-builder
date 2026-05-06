@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import re
 import time
@@ -10,10 +11,20 @@ from playwright.async_api import async_playwright, Page, TimeoutError as Playwri
 from utils import detect_board, slugify
 
 
-# Only Greenhouse and Lever get auto-fill attempts
-AUTO_APPLY_BOARDS = {"greenhouse", "lever"}
+# Module-level file logger — delay=True so the file is not created until first write
+_log = logging.getLogger("browser_agent")
+if not _log.handlers:
+    _log.setLevel(logging.INFO)
+    _h = logging.FileHandler("output/logs/browser_agent.log", encoding="utf-8", delay=True)
+    _h.setFormatter(logging.Formatter("%(asctime)s  %(message)s", datefmt="%Y-%m-%dT%H:%M:%S"))
+    _log.addHandler(_h)
+    _log.propagate = False
 
-# Intermediate redirect services we should follow to find the real ATS
+
+# ATS boards that get auto-fill attempts
+AUTO_APPLY_BOARDS = {"greenhouse", "lever", "smartrecruiters", "icims", "jobvite"}
+
+# Intermediate redirect services we follow to find the real ATS
 _INTERMEDIATE_HOPS = ("click.appcast.io", "appcast.io", "jobsearch.appcast.io")
 
 # ATS domain -> board name mapping
@@ -30,6 +41,7 @@ _ATS_PATTERNS = {
     "amazon":          ("amazon.jobs",),
     "ziprecruiter":    ("ziprecruiter.com",),
     "dice":            ("dice.com",),
+    "clearancejobs":   ("clearancejobs.com",),
 }
 
 _BROWSER_HEADERS = {
@@ -44,6 +56,18 @@ _BROWSER_HEADERS = {
     "Connection": "keep-alive",
 }
 
+_SUCCESS_PHRASES = [
+    "thank you",
+    "application submitted",
+    "application received",
+    "application complete",
+    "successfully applied",
+    "we've received",
+    "you have applied",
+    "your application has been",
+    "we received your application",
+]
+
 
 def _detect_destination_board(url: str) -> str:
     host = urlparse(url).netloc.lower()
@@ -51,25 +75,6 @@ def _detect_destination_board(url: str) -> str:
         if any(p in host for p in patterns):
             return board
     return "unknown"
-
-
-async def _follow_appcast(appcast_url: str) -> tuple[str, str]:
-    """
-    Use httpx to follow an Appcast redirect URL to its final ATS destination.
-    Returns (final_url, board_type).
-    """
-    async with httpx.AsyncClient(
-        follow_redirects=True,
-        headers=_BROWSER_HEADERS,
-        timeout=15.0,
-        max_redirects=15,
-    ) as client:
-        try:
-            resp = await client.get(appcast_url)
-            final = str(resp.url)
-            return final, _detect_destination_board(final)
-        except Exception as e:
-            return appcast_url, "unknown"
 
 
 async def _resolve_adzuna(page: Page, url: str, nav_timeout: int) -> tuple[str, str, list[str]]:
@@ -81,11 +86,10 @@ async def _resolve_adzuna(page: Page, url: str, nav_timeout: int) -> tuple[str, 
 
     Chain: adzuna -> [adzuna details] -> click.appcast.io -> final ATS
     Returns (final_url, board_type, chain_log).
-    Logs: [resolve] adzuna.com -> click.appcast.io -> greenhouse.io/COMPANY [ok]
     """
     chain = [url]
 
-    # ── Step 1: Navigate to Adzuna, wait for JS rendering ────────────────────
+    # Step 1: Navigate to Adzuna, wait for JS rendering
     await page.goto(url, timeout=nav_timeout)
     try:
         await page.wait_for_load_state("networkidle", timeout=10000)
@@ -99,7 +103,7 @@ async def _resolve_adzuna(page: Page, url: str, nav_timeout: int) -> tuple[str, 
     if "adzuna.com" not in urlparse(pw_final).netloc:
         return pw_final, _detect_destination_board(pw_final), chain
 
-    # ── Step 2: Scan rendered hrefs ──────────────────────────────────────────
+    # Step 2: Scan rendered hrefs for direct ATS links
     try:
         links = await page.eval_on_selector_all("a[href]", "els => els.map(e => e.href)")
     except Exception:
@@ -117,7 +121,7 @@ async def _resolve_adzuna(page: Page, url: str, nav_timeout: int) -> tuple[str, 
 
     chain.append(appcast_link)
 
-    # ── Step 3: Navigate Playwright to Appcast — same session bypasses CF ────
+    # Step 3: Navigate Playwright to Appcast — same session bypasses Cloudflare.
     # Appcast uses a JS window.location redirect that causes ERR_ABORTED on the
     # original navigation. This is normal — catch it and read page.url afterward.
     try:
@@ -125,7 +129,6 @@ async def _resolve_adzuna(page: Page, url: str, nav_timeout: int) -> tuple[str, 
     except Exception as e:
         if "ERR_ABORTED" not in str(e) and "net::ERR" not in str(e):
             return appcast_link, "unknown", chain + [f"[nav: {e}]"]
-        # ERR_ABORTED is expected from Appcast JS redirect — fall through to read page.url
 
     try:
         await page.wait_for_load_state("networkidle", timeout=12000)
@@ -148,7 +151,36 @@ def _log_chain(chain: list[str], board: str) -> None:
         host = urlparse(url).netloc or url[:40]
         labels.append(host)
     icon = "[ok]" if board in AUTO_APPLY_BOARDS else "[x]"
-    print(f"    [resolve] {' -> '.join(labels)} {icon} ({board})")
+    msg = f"    [resolve] {' -> '.join(labels)} {icon} ({board})"
+    print(msg)
+    _log.info(msg.strip())
+
+
+async def _check_success(page: Page) -> bool:
+    """Return True if the current page indicates a successful application submission."""
+    try:
+        content = (await page.content()).lower()
+        return any(p in content for p in _SUCCESS_PHRASES)
+    except Exception:
+        return False
+
+
+async def _try_submit(page: Page, selectors: list[str]) -> bool:
+    """Click the first matching submit button and wait for navigation. Returns True if clicked."""
+    for sel in selectors:
+        try:
+            btn = await page.query_selector(sel)
+            if btn:
+                await page.wait_for_timeout(800)
+                await btn.click()
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=15000)
+                except PlaywrightTimeout:
+                    pass
+                return True
+        except Exception:
+            continue
+    return False
 
 
 async def apply_to_job(url: str, profile: dict, resume_path: str, config: dict) -> dict:
@@ -163,6 +195,13 @@ async def apply_to_job(url: str, profile: dict, resume_path: str, config: dict) 
     nav_timeout = config.get("timeout", 30000)
     board = detect_board(url)
 
+    # Ensure log directory exists and point file handler there
+    log_dir = config.get("output_dir", "output/logs")
+    Path(log_dir).mkdir(parents=True, exist_ok=True)
+    for handler in _log.handlers:
+        if isinstance(handler, logging.FileHandler):
+            handler.baseFilename = os.path.abspath(os.path.join(log_dir, "browser_agent.log"))
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=config.get("headless", False),
@@ -175,7 +214,6 @@ async def apply_to_job(url: str, profile: dict, resume_path: str, config: dict) 
 
         try:
             if board == "adzuna":
-                # ── Hybrid resolution: Playwright + httpx ─────────────────
                 resolved_url, board, chain = await _resolve_adzuna(page, url, nav_timeout)
                 result["resolved_url"] = resolved_url
                 result["board"] = board
@@ -186,7 +224,6 @@ async def apply_to_job(url: str, profile: dict, resume_path: str, config: dict) 
                     result["notes"] = f"destination board: {board}, manual apply required"
                     return result
 
-                # Navigate Playwright to the resolved ATS page for form filling
                 await page.goto(resolved_url, timeout=nav_timeout)
                 try:
                     await page.wait_for_load_state("networkidle", timeout=10000)
@@ -201,7 +238,7 @@ async def apply_to_job(url: str, profile: dict, resume_path: str, config: dict) 
                 except PlaywrightTimeout:
                     pass
 
-            # ── CAPTCHA check ──────────────────────────────────────────────
+            # CAPTCHA check
             if await _detect_captcha(page):
                 if config.get("manual_fallback", True):
                     print("\n  CAPTCHA detected. Please complete it manually and press Enter...")
@@ -212,32 +249,42 @@ async def apply_to_job(url: str, profile: dict, resume_path: str, config: dict) 
                     await _screenshot(page, url, config, label="captcha")
                     return result
 
-            # ── Board-specific form handler ────────────────────────────────
+            # Screenshot before any form interaction
+            await _screenshot(page, url, config, label="before_submit")
+
             handlers = {
-                "linkedin":   _fill_linkedin,
-                "greenhouse": _fill_greenhouse,
-                "lever":      _fill_lever,
-                "workday":    _fill_workday,
-                "microsoft":  _fill_generic,
-                "generic":    _fill_generic,
+                "linkedin":        _fill_linkedin,
+                "greenhouse":      _fill_greenhouse,
+                "lever":           _fill_lever,
+                "workday":         _fill_workday,
+                "smartrecruiters": _fill_smartrecruiters,
+                "icims":           _fill_icims,
+                "jobvite":         _fill_jobvite,
+                "microsoft":       _fill_generic,
+                "generic":         _fill_generic,
             }
             handler = handlers.get(board, _fill_generic)
-            success = await handler(page, profile, resume_path)
+            success, notes = await handler(page, profile, resume_path)
 
             if success:
                 result["success"] = True
                 result["status"] = "applied"
+                result["notes"] = notes
+                _log.info(f"[applied] board={board} url={url}")
                 await _screenshot(page, url, config, label="success")
             else:
                 result["status"] = "manual_required"
-                result["notes"] = f"auto-fill incomplete for {board} board"
+                result["notes"] = notes or f"auto-fill incomplete for {board} board"
+                _log.info(f"[manual_required] board={board} notes={result['notes']} url={url}")
                 await _screenshot(page, url, config, label="failed")
 
         except PlaywrightTimeout:
             result["notes"] = "page timeout"
+            _log.warning(f"[timeout] url={url}")
             await _screenshot(page, url, config, label="timeout")
         except Exception as e:
             result["notes"] = str(e)
+            _log.error(f"[error] {e} url={url}")
             await _screenshot(page, url, config, label="error")
         finally:
             await browser.close()
@@ -261,11 +308,11 @@ async def _detect_captcha(page: Page) -> bool:
     return False
 
 
-async def _fill_generic(page: Page, profile: dict, resume_path: str) -> bool:
+async def _fill_generic(page: Page, profile: dict, resume_path: str) -> tuple[bool, str]:
     filled = 0
     field_map = {
-        'input[name*="first"][type="text"]':            profile.get("name", "").split()[0],
-        'input[name*="last"][type="text"]':             profile.get("name", "").split()[-1],
+        'input[name*="first"][type="text"]':            profile.get("name", "").split()[0] if profile.get("name") else "",
+        'input[name*="last"][type="text"]':             profile.get("name", "").split()[-1] if profile.get("name") else "",
         'input[name*="email"], input[type="email"]':    profile.get("email", ""),
         'input[name*="phone"], input[type="tel"]':      profile.get("phone", ""),
         'input[name*="linkedin"]':                      profile.get("linkedin", ""),
@@ -291,31 +338,225 @@ async def _fill_generic(page: Page, profile: dict, resume_path: str) -> bool:
         except Exception:
             pass
 
-    return filled > 2
+    return filled > 2, f"filled {filled} fields"
 
 
-async def _fill_linkedin(page: Page, profile: dict, resume_path: str) -> bool:
+async def _fill_linkedin(page: Page, profile: dict, resume_path: str) -> tuple[bool, str]:
     try:
         btn = await page.query_selector('button:has-text("Easy Apply")')
         if btn:
             await btn.click()
             await page.wait_for_timeout(2000)
         return await _fill_generic(page, profile, resume_path)
-    except Exception:
-        return False
+    except Exception as e:
+        return False, str(e)
 
 
-async def _fill_greenhouse(page: Page, profile: dict, resume_path: str) -> bool:
+async def _fill_greenhouse(page: Page, profile: dict, resume_path: str) -> tuple[bool, str]:
     return await _fill_generic(page, profile, resume_path)
 
 
-async def _fill_lever(page: Page, profile: dict, resume_path: str) -> bool:
+async def _fill_lever(page: Page, profile: dict, resume_path: str) -> tuple[bool, str]:
     return await _fill_generic(page, profile, resume_path)
 
 
-async def _fill_workday(page: Page, profile: dict, resume_path: str) -> bool:
+async def _fill_workday(page: Page, profile: dict, resume_path: str) -> tuple[bool, str]:
     print("  Workday detected -- automation support is limited.")
     return await _fill_generic(page, profile, resume_path)
+
+
+async def _fill_smartrecruiters(page: Page, profile: dict, resume_path: str) -> tuple[bool, str]:
+    """
+    SmartRecruiters (jobs.smartrecruiters.com) — uses name/email/phoneNumber fields.
+    Confirms success via page content after submit.
+    """
+    try:
+        filled = 0
+        name_parts = profile.get("name", "").split()
+        first = name_parts[0] if name_parts else ""
+        last = name_parts[-1] if len(name_parts) > 1 else ""
+
+        sr_fields = {
+            'input[name="firstName"]':   first,
+            'input[name="lastName"]':    last,
+            'input[name="email"]':       profile.get("email", ""),
+            'input[name="phoneNumber"]': profile.get("phone", ""),
+        }
+        for selector, value in sr_fields.items():
+            if not value:
+                continue
+            try:
+                el = await page.query_selector(selector)
+                if el:
+                    await el.click()
+                    await el.fill(value)
+                    filled += 1
+            except Exception:
+                pass
+
+        # Fallback to generic field names if SmartRecruiters-specific ones missed
+        if filled < 2:
+            ok, msg = await _fill_generic(page, profile, resume_path)
+            if not ok:
+                return False, f"SmartRecruiters: {msg}"
+        else:
+            # Resume upload
+            if resume_path and os.path.exists(resume_path):
+                try:
+                    file_inputs = await page.query_selector_all('input[type="file"]')
+                    if file_inputs:
+                        await file_inputs[0].set_input_files(resume_path)
+                        filled += 1
+                except Exception:
+                    pass
+
+        if filled < 2:
+            return False, f"SmartRecruiters: only filled {filled} fields"
+
+        submitted = await _try_submit(page, [
+            'button[type="submit"]',
+            'button:has-text("Apply")',
+            'button:has-text("Submit Application")',
+            'button:has-text("Send Application")',
+            'button:has-text("Submit")',
+        ])
+
+        if submitted and await _check_success(page):
+            return True, "applied via SmartRecruiters"
+        if submitted:
+            return False, "SmartRecruiters: submitted but no confirmation text detected"
+        return False, "SmartRecruiters: could not find submit button"
+
+    except Exception as e:
+        return False, f"SmartRecruiters error: {e}"
+
+
+async def _fill_icims(page: Page, profile: dict, resume_path: str) -> tuple[bool, str]:
+    """
+    iCIMS — handles multi-step application flow (up to 3 steps).
+    Tries guest-apply path if a login/register gate is present first.
+    """
+    try:
+        # Some iCIMS instances show a login gate — look for guest/continue path
+        for label in ["Continue as Guest", "Apply as Guest", "Continue Without Creating an Account"]:
+            try:
+                el = await page.query_selector(
+                    f'a:has-text("{label}"), button:has-text("{label}")'
+                )
+                if el:
+                    await el.click()
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=10000)
+                    except PlaywrightTimeout:
+                        pass
+                    break
+            except Exception:
+                pass
+
+        # Multi-step loop — iCIMS can have 2-4 pages
+        for step in range(4):
+            if await _check_success(page):
+                return True, f"applied via iCIMS (completed at step {step})"
+
+            filled = 0
+            field_map = {
+                'input[name*="first"][type="text"]':         profile.get("name", "").split()[0] if profile.get("name") else "",
+                'input[name*="last"][type="text"]':          profile.get("name", "").split()[-1] if profile.get("name") else "",
+                'input[name*="email"], input[type="email"]': profile.get("email", ""),
+                'input[name*="phone"], input[type="tel"]':   profile.get("phone", ""),
+            }
+            for selector, value in field_map.items():
+                if not value:
+                    continue
+                try:
+                    for el in (await page.query_selector_all(selector))[:1]:
+                        await el.click()
+                        await el.fill(value)
+                        filled += 1
+                except Exception:
+                    pass
+
+            if resume_path and os.path.exists(resume_path):
+                try:
+                    file_inputs = await page.query_selector_all('input[type="file"]')
+                    if file_inputs:
+                        await file_inputs[0].set_input_files(resume_path)
+                        filled += 1
+                except Exception:
+                    pass
+
+            advanced = await _try_submit(page, [
+                'input[type="submit"]',
+                'button:has-text("Next")',
+                'a:has-text("Next")',
+                'button:has-text("Submit")',
+                'button[type="submit"]',
+                'button:has-text("Continue")',
+            ])
+
+            if not advanced:
+                break
+
+            if await _check_success(page):
+                return True, f"applied via iCIMS (step {step + 1})"
+
+        return False, "iCIMS: form incomplete or multi-step flow not fully handled"
+
+    except Exception as e:
+        return False, f"iCIMS error: {e}"
+
+
+async def _fill_jobvite(page: Page, profile: dict, resume_path: str) -> tuple[bool, str]:
+    """
+    Jobvite (jobs.jobvite.com) — standard field names, single-step submit.
+    """
+    try:
+        filled = 0
+        field_map = {
+            'input[name*="first"][type="text"]':         profile.get("name", "").split()[0] if profile.get("name") else "",
+            'input[name*="last"][type="text"]':          profile.get("name", "").split()[-1] if profile.get("name") else "",
+            'input[name*="email"], input[type="email"]': profile.get("email", ""),
+            'input[name*="phone"], input[type="tel"]':   profile.get("phone", ""),
+            'input[name*="linkedin"]':                   profile.get("linkedin", ""),
+        }
+        for selector, value in field_map.items():
+            if not value:
+                continue
+            try:
+                for el in (await page.query_selector_all(selector))[:1]:
+                    await el.click()
+                    await el.fill(value)
+                    filled += 1
+            except Exception:
+                pass
+
+        if resume_path and os.path.exists(resume_path):
+            try:
+                file_inputs = await page.query_selector_all('input[type="file"]')
+                if file_inputs:
+                    await file_inputs[0].set_input_files(resume_path)
+                    filled += 1
+            except Exception:
+                pass
+
+        if filled < 2:
+            return False, f"Jobvite: only filled {filled} fields"
+
+        submitted = await _try_submit(page, [
+            'button:has-text("Apply")',
+            'button:has-text("Submit")',
+            'button[type="submit"]',
+            'input[type="submit"]',
+        ])
+
+        if submitted and await _check_success(page):
+            return True, "applied via Jobvite"
+        if submitted:
+            return False, "Jobvite: submitted but no confirmation text detected"
+        return False, "Jobvite: could not find submit button"
+
+    except Exception as e:
+        return False, f"Jobvite error: {e}"
 
 
 async def _screenshot(page: Page, url: str, config: dict, label: str = "screenshot"):

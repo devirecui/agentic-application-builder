@@ -59,6 +59,16 @@ def detect_board(url: str) -> str:
         return "workday"
     if "icims.com" in host:
         return "icims"
+    if "smartrecruiters.com" in host:
+        return "smartrecruiters"
+    if "jobvite.com" in host:
+        return "jobvite"
     if "microsoft.com" in host or "careers.microsoft" in host:
         return "microsoft"
+    if "clearancejobs.com" in host:
+        return "clearancejobs"
+    if "dice.com" in host:
+        return "dice"
+    if "ziprecruiter.com" in host:
+        return "ziprecruiter"
     return "generic"

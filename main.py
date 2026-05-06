@@ -267,12 +267,109 @@ def status(config_path):
     print_status(tracker)
 
 
+def _run_auto_apply(config: dict, tracker_path: str) -> None:
+    """Run auto-apply on all eligible tracker entries. Used by discover --auto-apply."""
+    from browser_agent import AUTO_APPLY_BOARDS
+
+    blacklist    = [b.lower() for b in config.get("apply", {}).get("blacklist", [])]
+    max_applies  = config.get("apply", {}).get("max_applies", 10)
+    tracker      = load_tracker(tracker_path)
+    profile      = config.get("personal", {})
+    apply_config = {
+        **config.get("apply", {}),
+        "output_dir": config.get("logging", {}).get("output_dir", "output/logs"),
+    }
+
+    eligible = [a for a in tracker["applications"] if a.get("apply_status") == "eligible"]
+    eligible.sort(key=lambda x: -x.get("match_score", 0))
+
+    console.print(f"\n[cyan]Auto-apply: {len(eligible)} eligible entries (hard stop after {max_applies} successes)[/cyan]\n")
+
+    success_count = 0
+    boards_seen: dict[str, int] = {}
+
+    for app in eligible:
+        company     = app.get("company", "")
+        role        = app.get("role", "")
+        score       = app.get("match_score", 0)
+        url         = app.get("url", "")
+        resume_path = app.get("tailored_resume", "")
+
+        if any(b in company.lower() for b in blacklist):
+            console.print(f"[yellow][skipped] {role} @ {company} -> blacklisted[/yellow]")
+            app["apply_status"] = "skipped"
+            app["apply_reason"] = "blacklisted company"
+            save_tracker(tracker, tracker_path)
+            continue
+
+        if not resume_path or not os.path.exists(resume_path):
+            console.print(f"[red][skipped] {role} @ {company} -> tailored resume not found[/red]")
+            continue
+
+        console.print(f"[bold]Processing ({score}):[/bold] {role} @ {company}")
+        time.sleep(2)
+
+        try:
+            result = asyncio.run(apply_to_job(url, profile, resume_path, apply_config))
+        except Exception as e:
+            console.print(f"  [red][failed] {role} @ {company} -> {e}[/red]")
+            app["apply_status"] = "failed"
+            app["apply_reason"] = str(e)
+            save_tracker(tracker, tracker_path)
+            continue
+
+        board        = result.get("board", "unknown")
+        resolved_url = result.get("resolved_url", url)
+        boards_seen[board] = boards_seen.get(board, 0) + 1
+
+        if result["status"] == "manual":
+            console.print(f"  [yellow][manual] {role} @ {company} -> destination: {board}[/yellow]")
+            console.print(f"  URL: {resolved_url}")
+            app["apply_status"] = "manual"
+            app["apply_reason"] = f"destination board: {board}, manual apply required"
+            app["resolved_url"] = resolved_url
+            app["board"]        = board
+
+        elif result.get("success"):
+            console.print(f"  [green][applied] {role} @ {company} (score: {score})[/green]")
+            app["apply_status"] = "applied"
+            app["status"]       = "applied"
+            app["applied_at"]   = datetime.now().isoformat(timespec="seconds")
+            app["board"]        = board
+            success_count += 1
+
+        else:
+            console.print(f"  [red][failed] {role} @ {company} -> {result.get('notes', '')}[/red]")
+            app["apply_status"] = "failed"
+            app["apply_reason"] = result.get("notes", "")
+            app["board"]        = board
+
+        save_tracker(tracker, tracker_path)
+
+        if success_count >= max_applies:
+            console.print(f"\n[bold yellow]Hard stop: reached {max_applies} successful applies.[/bold yellow]")
+            break
+
+    # Board breakdown summary
+    if boards_seen:
+        console.print(f"\n[bold]Board resolution breakdown:[/bold]")
+        for board, count in sorted(boards_seen.items(), key=lambda x: -x[1]):
+            icon  = "[green][ok][/green]" if board in AUTO_APPLY_BOARDS else "[yellow][x][/yellow]"
+            console.print(f"  {icon} {board}: {count}")
+
+    console.print(f"\n[bold green]Auto-apply complete: {success_count} applied of {len(eligible)} eligible[/bold green]")
+    tracker = load_tracker(tracker_path)
+    _print_apply_report(tracker)
+
+
 @cli.command()
 @click.option("--config", "config_path", default="config.yaml", help="Config file path")
 @click.option("--auto-prepare", "auto_prepare", is_flag=True, default=False,
               help="Automatically tailor resume for every job passing threshold")
-def discover(config_path, auto_prepare):
-    """Discover and rank new jobs; optionally auto-tailor all passing resumes"""
+@click.option("--auto-apply", "auto_apply_flag", is_flag=True, default=False,
+              help="After prepare, auto-apply to all eligible tracker entries")
+def discover(config_path, auto_prepare, auto_apply_flag):
+    """Discover and rank new jobs; optionally auto-tailor and auto-apply."""
     config = load_config(config_path)
 
     try:
@@ -283,27 +380,25 @@ def discover(config_path, auto_prepare):
 
     if not ranked:
         console.print("[yellow]No new jobs to process.[/yellow]")
+        if auto_apply_flag:
+            _run_auto_apply(config, tracker_path)
         return
 
     _print_ranked_top10(ranked)
 
     if auto_prepare:
         console.print(f"\n[cyan]Auto-preparing {len(ranked)} resumes...[/cyan]")
-        for i, job in enumerate(ranked, 1):
-            console.print(
-                f"  Tailoring [{i}/{len(ranked)}]: {job['title'][:50]} @ {job['company']}",
-                end="  "
-            )
-            # will print inline; prepare_batch handles the actual work
-        console.print()  # newline after progress hints
-
         tailored = prepare_batch(ranked, resume_data, config)
         n_ok = sum(1 for t in tailored if t["tailored_path"] != "[FAILED]")
         console.print(f"[bold green]Tailored {n_ok}/{len(tailored)} resumes[/bold green]\n")
         _print_prepare_summary(tailored)
     else:
         console.print(f"\n[dim]Run 'python main.py report' to see the full ranked table.[/dim]")
-        console.print(f"[dim]Add --auto-prepare to tailor all resumes automatically.[/dim]")
+        if not auto_apply_flag:
+            console.print(f"[dim]Add --auto-prepare to tailor all resumes automatically.[/dim]")
+
+    if auto_apply_flag:
+        _run_auto_apply(config, config.get("tracker", {}).get("path", "data/applications.json"))
 
 
 @cli.command()
@@ -421,100 +516,18 @@ def _print_apply_report(tracker: dict) -> None:
 
 @cli.command("auto-apply")
 @click.option("--config", "config_path", default="config.yaml", help="Config file path")
-@click.option("--max-applies", default=10, show_default=True, help="Hard stop after N successful applies")
-def auto_apply(config_path, max_applies):
-    """Auto-apply to all eligible tracker entries (Greenhouse/Lever only)."""
-    config      = load_config(config_path)
-    blacklist   = [b.lower() for b in config.get("apply", {}).get("blacklist", [])]
+def auto_apply(config_path):
+    """Auto-apply to all eligible tracker entries."""
+    config       = load_config(config_path)
+    blacklist    = [b.lower() for b in config.get("apply", {}).get("blacklist", [])]
     tracker_path = config.get("tracker", {}).get("path", "data/applications.json")
-    tracker      = load_tracker(tracker_path)
 
     if not any("ust" in b for b in blacklist):
         console.print("[bold red]UST/UST Global not found in config.yaml apply.blacklist -- add it before running.[/bold red]")
         return
 
     console.print(f"[green]Blacklist active:[/green] {', '.join(config.get('apply', {}).get('blacklist', []))}")
-
-    eligible = [
-        a for a in tracker["applications"]
-        if a.get("apply_status") == "eligible"
-    ]
-    eligible.sort(key=lambda x: -x.get("match_score", 0))
-
-    console.print(f"[cyan]{len(eligible)} eligible entries queued (hard stop after {max_applies} successes)[/cyan]\n")
-
-    profile      = config.get("personal", {})
-    apply_config = {
-        **config.get("apply", {}),
-        "output_dir": config.get("logging", {}).get("output_dir", "output/logs"),
-    }
-
-    success_count = 0
-
-    for app in eligible:
-        company     = app.get("company", "")
-        role        = app.get("role", "")
-        score       = app.get("match_score", 0)
-        url         = app.get("url", "")
-        resume_path = app.get("tailored_resume", "")
-
-        if any(b in company.lower() for b in blacklist):
-            console.print(f"[yellow][skipped] {role} @ {company} → blacklisted[/yellow]")
-            app["apply_status"] = "skipped"
-            app["apply_reason"] = "blacklisted company"
-            save_tracker(tracker, tracker_path)
-            continue
-
-        if not resume_path or not os.path.exists(resume_path):
-            console.print(f"[red][skipped] {role} @ {company} → tailored resume not found: {resume_path}[/red]")
-            continue
-
-        console.print(f"[bold]Processing ({score}):[/bold] {role} @ {company}")
-        time.sleep(2)  # rate-limit guard between resolution attempts
-
-        try:
-            result = asyncio.run(apply_to_job(url, profile, resume_path, apply_config))
-        except Exception as e:
-            console.print(f"  [red][failed] {role} @ {company} → {e}[/red]")
-            app["apply_status"] = "failed"
-            app["apply_reason"] = str(e)
-            save_tracker(tracker, tracker_path)
-            continue
-
-        board        = result.get("board", "unknown")
-        resolved_url = result.get("resolved_url", url)
-
-        if result["status"] == "manual":
-            console.print(f"  [yellow][manual] {role} @ {company} → destination board: {board}, manual apply required[/yellow]")
-            console.print(f"  URL: {resolved_url}")
-            app["apply_status"] = "manual"
-            app["apply_reason"] = f"destination board: {board}, manual apply required"
-            app["resolved_url"] = resolved_url
-            app["board"]        = board
-
-        elif result.get("success"):
-            console.print(f"  [green][applied] {role} @ {company} (score: {score}) → success[/green]")
-            app["apply_status"] = "applied"
-            app["status"]       = "applied"
-            app["applied_at"]   = datetime.now().isoformat(timespec="seconds")
-            app["board"]        = board
-            success_count += 1
-
-        else:
-            console.print(f"  [red][failed] {role} @ {company} (score: {score}) → failed: {result.get('notes', 'unknown')}[/red]")
-            app["apply_status"] = "failed"
-            app["apply_reason"] = result.get("notes", "")
-            app["board"]        = board
-
-        save_tracker(tracker, tracker_path)
-
-        if success_count >= max_applies:
-            console.print(f"\n[bold yellow]Hard stop: reached {max_applies} successful applies.[/bold yellow]")
-            break
-
-    console.print(f"\n[bold green]Auto-apply complete: {success_count} applied of {len(eligible)} eligible[/bold green]")
-    console.print()
-    _print_apply_report(tracker)
+    _run_auto_apply(config, tracker_path)
 
 
 @cli.command("apply-report")
