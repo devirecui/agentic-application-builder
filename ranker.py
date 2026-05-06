@@ -9,6 +9,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 from jd_analyzer import fetch_jd, analyze_jd
 from tracker import add_application, is_duplicate
+from utils import log_token_usage
 
 
 LOW_PAY_THRESHOLD = 150_000
@@ -42,6 +43,7 @@ def _fit_summary(jd_analysis: dict, model: str) -> str:
                 jd_analysis=json.dumps(jd_analysis, indent=2)[:3000]
             )}],
         )
+        log_token_usage("ranker", model, msg.usage.input_tokens, msg.usage.output_tokens)
         return "".join(b.text for b in msg.content if getattr(b, "type", "") == "text").strip()
     except Exception:
         return f"Score {jd_analysis.get('match_score', 0)}: {', '.join(jd_analysis.get('gaps', [])[:2])}"

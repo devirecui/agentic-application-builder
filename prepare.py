@@ -21,9 +21,9 @@ def prepare_batch(ranked: list[dict], resume_data: dict, config: dict) -> list[d
     Tailor resumes for all ranked entries using their already-computed jd_analysis.
     Skips JD re-fetch. Updates tracker to status: ready. Returns summary list.
     """
-    tracker_path = config.get("tracker", {}).get("path", "data/applications.json")
-    model        = config.get("anthropic", {}).get("model", "claude-sonnet-4-6")
-    output_dir   = config.get("resume", {}).get("tailored_output_dir", "data/tailored")
+    tracker_path  = config.get("tracker", {}).get("path", "data/applications.json")
+    tailor_model  = config.get("anthropic", {}).get("model", "claude-sonnet-4-6")
+    output_dir    = config.get("resume", {}).get("tailored_output_dir", "data/tailored")
 
     tracker = load_tracker(tracker_path)
     results = []
@@ -37,7 +37,7 @@ def prepare_batch(ranked: list[dict], resume_data: dict, config: dict) -> list[d
         salary      = entry.get("salary_signal", "")
 
         try:
-            tailored_md   = tailor_resume(resume_data, jd_analysis, model)
+            tailored_md   = tailor_resume(resume_data, jd_analysis, tailor_model)
             tailored_path = save_tailored_resume(tailored_md, company, role, output_dir)
         except Exception as e:
             print(f"    [error] Tailoring failed for {role} @ {company}: {e}", flush=True)
@@ -82,9 +82,10 @@ def prepare_job(url: str, config: dict) -> None:
             f"Proceeding anyway.[/yellow]"
         )
 
-    resume_path = config.get("resume", {}).get("base_path", "data/resume_base.docx")
-    model = config.get("anthropic", {}).get("model", "claude-sonnet-4-6")
-    output_dir = config.get("resume", {}).get("tailored_output_dir", "data/tailored")
+    resume_path    = config.get("resume", {}).get("base_path", "data/resume_base.docx")
+    analysis_model = config.get("anthropic", {}).get("analysis_model", "claude-haiku-4-5-20251001")
+    tailor_model   = config.get("anthropic", {}).get("model", "claude-sonnet-4-6")
+    output_dir     = config.get("resume", {}).get("tailored_output_dir", "data/tailored")
 
     console.print(f"[cyan]Parsing resume...[/cyan]")
     resume_data = parse_resume(resume_path)
@@ -93,10 +94,10 @@ def prepare_job(url: str, config: dict) -> None:
     jd_text = fetch_jd(url)
 
     console.print(f"[cyan]Analyzing job description...[/cyan]")
-    jd_analysis = analyze_jd(jd_text, resume_data, model)
+    jd_analysis = analyze_jd(jd_text, resume_data, analysis_model)
 
     console.print(f"[cyan]Tailoring resume...[/cyan]")
-    tailored_md = tailor_resume(resume_data, jd_analysis, model)
+    tailored_md = tailor_resume(resume_data, jd_analysis, tailor_model)
 
     company = jd_analysis.get("company", entry.get("company", "company"))
     role = jd_analysis.get("role", entry.get("role", "role"))

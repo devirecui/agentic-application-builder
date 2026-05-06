@@ -6,6 +6,7 @@ import httpx
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from anthropic import Anthropic
+from utils import log_token_usage
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
@@ -102,7 +103,7 @@ def _resume_summary(resume_data: dict) -> str:
     return "\n\n".join(parts)
 
 
-def analyze_jd(jd_text: str, resume_data: dict, model: str = "claude-sonnet-4-20250514") -> dict:
+def analyze_jd(jd_text: str, resume_data: dict, model: str = "claude-haiku-4-5-20251001") -> dict:
     client = Anthropic()
     prompt = JD_PROMPT.format(
         resume_summary=_resume_summary(resume_data),
@@ -117,6 +118,7 @@ def analyze_jd(jd_text: str, resume_data: dict, model: str = "claude-sonnet-4-20
                 max_tokens=2000,
                 messages=[{"role": "user", "content": prompt}],
             )
+            log_token_usage("jd_analyzer", model, msg.usage.input_tokens, msg.usage.output_tokens)
             text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
             return _parse_json(text)
         except Exception as e:

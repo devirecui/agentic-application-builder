@@ -1,8 +1,39 @@
 import logging
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
+
+# Pricing per million tokens (USD) — update when Anthropic changes rates
+_TOKEN_PRICING: dict[str, tuple[float, float]] = {
+    "claude-haiku-4-5":  (0.80,  4.00),
+    "claude-haiku-3-5":  (0.80,  4.00),
+    "claude-haiku":      (0.25,  1.25),
+    "claude-sonnet-4":   (3.00, 15.00),
+    "claude-sonnet-3-7": (3.00, 15.00),
+    "claude-sonnet":     (3.00, 15.00),
+    "claude-opus-4":    (15.00, 75.00),
+    "claude-opus":      (15.00, 75.00),
+}
+
+
+def log_token_usage(source_file: str, model: str, input_tokens: int, output_tokens: int) -> None:
+    cost_in, cost_out = 3.00, 15.00  # default sonnet pricing
+    for prefix, pricing in _TOKEN_PRICING.items():
+        if prefix in model:
+            cost_in, cost_out = pricing
+            break
+    est_cost = (input_tokens / 1_000_000) * cost_in + (output_tokens / 1_000_000) * cost_out
+    try:
+        log_dir = Path("output/logs")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        ts   = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        line = f"{ts} | {source_file} | {model} | {input_tokens} | {output_tokens} | {est_cost:.6f}\n"
+        with open(log_dir / "token_usage.log", "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        pass  # never crash on logging failure
 
 
 def setup_logging(level: str = "INFO", output_dir: str = "output/logs") -> logging.Logger:

@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from dotenv import load_dotenv
 from anthropic import Anthropic
-from utils import slugify
+from utils import slugify, log_token_usage
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
@@ -38,7 +38,7 @@ contact line
 Do not add skills or experience that don't exist in the original."""
 
 
-def tailor_resume(resume_data: dict, jd_analysis: dict, model: str = "claude-sonnet-4-20250514") -> str:
+def tailor_resume(resume_data: dict, jd_analysis: dict, model: str = "claude-sonnet-4-6") -> str:
     client = Anthropic()
 
     safe_resume = {k: v for k, v in resume_data.items() if k != "raw_text"}
@@ -56,6 +56,7 @@ def tailor_resume(resume_data: dict, jd_analysis: dict, model: str = "claude-son
                 max_tokens=4000,
                 messages=[{"role": "user", "content": prompt}],
             )
+            log_token_usage("resume_tailor", model, msg.usage.input_tokens, msg.usage.output_tokens)
             return "".join(b.text for b in msg.content if getattr(b, "type", "") == "text").strip()
         except Exception as e:
             last_err = e
