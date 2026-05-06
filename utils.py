@@ -5,16 +5,16 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
-# Pricing per million tokens (USD) — update when Anthropic changes rates
+# Pricing per million tokens (USD) — source: docs.anthropic.com/en/docs/about-claude/pricing
 _TOKEN_PRICING: dict[str, tuple[float, float]] = {
-    "claude-haiku-4-5":  (0.80,  4.00),
-    "claude-haiku-3-5":  (0.80,  4.00),
-    "claude-haiku":      (0.25,  1.25),
-    "claude-sonnet-4":   (3.00, 15.00),
-    "claude-sonnet-3-7": (3.00, 15.00),
-    "claude-sonnet":     (3.00, 15.00),
-    "claude-opus-4":    (15.00, 75.00),
-    "claude-opus":      (15.00, 75.00),
+    "claude-haiku-4-5":  (1.00,  5.00),   # Haiku 4.5 — verified May 2026
+    "claude-haiku-3-5":  (0.80,  4.00),   # Haiku 3.5
+    "claude-haiku":      (0.25,  1.25),   # Haiku 3
+    "claude-sonnet-4":   (3.00, 15.00),   # Sonnet 4.x
+    "claude-sonnet-3-7": (3.00, 15.00),   # Sonnet 3.7
+    "claude-sonnet":     (3.00, 15.00),   # Sonnet 3.x fallback
+    "claude-opus-4":    (15.00, 75.00),   # Opus 4.x
+    "claude-opus":      (15.00, 75.00),   # Opus 3.x fallback
 }
 
 
