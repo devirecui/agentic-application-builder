@@ -476,7 +476,11 @@ def run_scheduler(config_path):
             sched_log.info(f"Discovered: {len(ranked)} jobs passed threshold")
 
             if ranked and resume_data:
-                tailored = prepare_batch(ranked, resume_data, config)
+                threshold  = config.get("discovery", {}).get("auto_prepare_threshold", 78)
+                to_tailor  = [j for j in ranked if j["match_score"] >= threshold]
+                held_back  = len(ranked) - len(to_tailor)
+                sched_log.info(f"Threshold {threshold}%: {len(to_tailor)} to tailor, {held_back} held as discovered")
+                tailored = prepare_batch(to_tailor, resume_data, config)
                 n_ok = sum(1 for t in tailored if t["tailored_path"] != "[FAILED]")
                 sched_log.info(f"Tailored: {n_ok}/{len(tailored)} resumes")
             else:
