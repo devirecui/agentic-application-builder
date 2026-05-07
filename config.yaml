@@ -35,6 +35,7 @@ logging:
 discovery:
   run_every_hours: 24
   max_days_old: 30
+  auto_prepare_threshold: 78   # only tailor resumes above this; below goes to discovered
   searches:
     - query: "AI Architect Azure"
       min_match_score: 65

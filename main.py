@@ -366,12 +366,14 @@ def _run_auto_apply(config: dict, tracker_path: str) -> None:
 @cli.command()
 @click.option("--config", "config_path", default="config.yaml", help="Config file path")
 @click.option("--auto-prepare", "auto_prepare", is_flag=True, default=False,
-              help="Automatically tailor resume for every job passing threshold")
+              help="Automatically tailor resumes for jobs at or above auto_prepare_threshold")
 @click.option("--auto-apply", "auto_apply_flag", is_flag=True, default=False,
               help="After prepare, auto-apply to all eligible tracker entries")
 @click.option("--dry-run", "dry_run", is_flag=True, default=False,
               help="Discover + deduplicate + keyword score only; no Claude calls, no cost")
-def discover(config_path, auto_prepare, auto_apply_flag, dry_run):
+@click.option("--prepare-threshold", "prepare_threshold", default=None, type=int,
+              help="Override auto_prepare_threshold from config at runtime")
+def discover(config_path, auto_prepare, auto_apply_flag, dry_run, prepare_threshold):
     """Discover and rank new jobs; optionally auto-tailor and auto-apply."""
     config = load_config(config_path)
 
@@ -394,11 +396,27 @@ def discover(config_path, auto_prepare, auto_apply_flag, dry_run):
     _print_ranked_top10(ranked)
 
     if auto_prepare:
-        console.print(f"\n[cyan]Auto-preparing {len(ranked)} resumes...[/cyan]")
-        tailored = prepare_batch(ranked, resume_data, config)
-        n_ok = sum(1 for t in tailored if t["tailored_path"] != "[FAILED]")
-        console.print(f"[bold green]Tailored {n_ok}/{len(tailored)} resumes[/bold green]\n")
-        _print_prepare_summary(tailored)
+        threshold = (
+            prepare_threshold
+            if prepare_threshold is not None
+            else config.get("discovery", {}).get("auto_prepare_threshold", 78)
+        )
+        to_tailor = [j for j in ranked if j["match_score"] >= threshold]
+        held_back  = len(ranked) - len(to_tailor)
+
+        console.print(f"\n[cyan]Auto-preparing {len(to_tailor)} resumes (score ≥{threshold}%)...[/cyan]")
+        if held_back:
+            console.print(
+                f"[dim]  {held_back} job(s) scored below {threshold}% — "
+                f"added to tracker as 'discovered', tailor manually with: "
+                f"python main.py prepare --url <url>[/dim]"
+            )
+
+        if to_tailor:
+            tailored = prepare_batch(to_tailor, resume_data, config)
+            n_ok = sum(1 for t in tailored if t["tailored_path"] != "[FAILED]")
+            console.print(f"[bold green]Tailored {n_ok}/{len(tailored)} resumes[/bold green]\n")
+            _print_prepare_summary(tailored)
     else:
         console.print(f"\n[dim]Run 'python main.py report' to see the full ranked table.[/dim]")
         if not auto_apply_flag:
